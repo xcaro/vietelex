@@ -1,0 +1,23 @@
+# Local/editor files
+.DS_Store
+.idea/
+.codegraph/
+
+# Python cache and virtual environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Build outputs
+build/
+dist/
+*.app/
+
+# Local archives/backups/data
+*.zip
+*.bak
+data.json
+
+# Test and diagnostic artifacts are kept locally only.
+tests/
