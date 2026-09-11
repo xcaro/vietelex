@@ -1,13 +1,10 @@
 import sys
-import time
-import threading
 import Quartz
 
 from engine import VietelexEngine
 
 engine    = VietelexEngine()
 enabled   = True
-injecting = False
 reset_on_mouse_click = True
 
 RESET_KEYCODES = {
@@ -27,32 +24,27 @@ RESET_EVENT_TYPES = {
     Quartz.kCGEventOtherMouseDown,
 }
 
-def send_backspaces(n: int):
-    src = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateHIDSystemState)
-    for _ in range(n):
-        Quartz.CGEventPost(Quartz.kCGHIDEventTap,
-            Quartz.CGEventCreateKeyboardEvent(src, 51, True))
-        Quartz.CGEventPost(Quartz.kCGHIDEventTap,
-            Quartz.CGEventCreateKeyboardEvent(src, 51, False))
-        time.sleep(0.004)
+# Events posted through the callback proxy enter downstream of this tap, in
+# order, before the next physical event. No worker or global bypass is needed.
+def _post_key(proxy, src, keycode, down, text=None):
+    event = Quartz.CGEventCreateKeyboardEvent(src, keycode, down)
+    Quartz.CGEventSetFlags(event, 0)
+    if text is not None:
+        Quartz.CGEventKeyboardSetUnicodeString(event, len(text), text)
+    Quartz.CGEventTapPostEvent(proxy, event)
 
-def send_string(s: str):
-    src = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateHIDSystemState)
-    for ch in s:
-        e_dn = Quartz.CGEventCreateKeyboardEvent(src, 0, True)
-        e_up = Quartz.CGEventCreateKeyboardEvent(src, 0, False)
-        Quartz.CGEventKeyboardSetUnicodeString(e_dn, len(ch), ch)
-        Quartz.CGEventKeyboardSetUnicodeString(e_up, len(ch), ch)
-        Quartz.CGEventPost(Quartz.kCGHIDEventTap, e_dn)
-        Quartz.CGEventPost(Quartz.kCGHIDEventTap, e_up)
-        time.sleep(0.003)
+
+def send_replacement(proxy, delete_n: int, text: str):
+    src = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStatePrivate)
+    for _ in range(delete_n):
+        _post_key(proxy, src, 51, True)
+        _post_key(proxy, src, 51, False)
+    for ch in text:
+        _post_key(proxy, src, 0, True, ch)
+        _post_key(proxy, src, 0, False, ch)
+
 
 def keyboard_callback(proxy, event_type, event, refcon):
-    global injecting
-
-    if injecting:
-        return event
-
     if event_type in RESET_EVENT_TYPES:
         if reset_on_mouse_click:
             engine.clear()
@@ -81,13 +73,11 @@ def keyboard_callback(proxy, event_type, event, refcon):
         return event
 
     length, chars = Quartz.CGEventKeyboardGetUnicodeString(event, 8, None, None)
-    if not chars or length == 0:
+    if length != 1 or len(chars or "") != 1 or not (32 <= ord(chars) < 127):
+        engine.clear()
         return event
 
-    ch = chars[0]
-
-    if ord(ch) > 127 or ord(ch) < 32:
-        return event
+    ch = chars
 
     if not enabled:
         if ch in (' ', '\t', '\n', '\r'):
@@ -100,17 +90,7 @@ def keyboard_callback(proxy, event_type, event, refcon):
     if delete_n == 0 and insert_str == ch:
         return event
 
-    injecting = True
-    def do_inject():
-        global injecting
-        try:
-            if delete_n > 0:
-                send_backspaces(delete_n)
-            send_string(insert_str)
-        finally:
-            injecting = False
-
-    threading.Thread(target=do_inject, daemon=True).start()
+    send_replacement(proxy, delete_n, insert_str)
     return None
 
 def start():

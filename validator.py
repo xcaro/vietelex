@@ -1,4 +1,4 @@
-from data import is_vowel, get_vowel_set, get_tone, BASE_CHARS
+from data import is_vowel, get_vowel_set, BASE_CHARS
 
 INVALID_CHARS_IN_WORD = frozenset('fjzw')
 
@@ -58,9 +58,6 @@ class VietnamesePhonologyValidator:
         if self._has_multi_syllable_structure(word):
             return False
 
-        if self._has_toned_vowel_then_more_vowel(word):
-            return False
-
         coda = self._get_coda(word)
         if self._is_invalid_coda(coda):
             return False
@@ -109,17 +106,6 @@ class VietnamesePhonologyValidator:
 
         if len(onset) >= 2 and onset[:2] in INVALID_ONSET_CLUSTERS:
             return True
-        return False
-
-    def _has_toned_vowel_then_more_vowel(self, word: list[str]) -> bool:
-        found_toned = False
-        for ch in word:
-            if is_vowel(ch):
-                if found_toned:
-                    return True
-                if get_tone(ch) != 5:
-                    found_toned = True
-
         return False
 
     def _has_multi_syllable_structure(self, word: list[str]) -> bool:
