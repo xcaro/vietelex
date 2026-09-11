@@ -27,11 +27,13 @@ class VietelexEngine:
     def __init__(self, validator_enabled: bool = True):
         self.buf:   list[str]  = []
         self.upper: list[bool] = []
+        self._w_undo = None
         self.last_w_converted  = False
         self.temp_viet_off     = False
         self._validator = VietnamesePhonologyValidator() if validator_enabled else None
 
     def clear(self):
+        self._w_undo = None
         self.buf.clear()
         self.upper.clear()
         self.last_w_converted = False
@@ -42,6 +44,7 @@ class VietelexEngine:
         self.clear()
 
     def backspace(self):
+        self._w_undo = None
         if self.buf:
             self.buf.pop()
             self.upper.pop()
@@ -51,6 +54,7 @@ class VietelexEngine:
     def notify_deleted(self, n: int = -1) -> None:
         if n == 0:
             return
+        self._w_undo = None
         if n < 0 or n >= len(self.buf):
             self.clear()
         else:
@@ -68,6 +72,8 @@ class VietelexEngine:
 
     def process(self, ch: str) -> tuple[int, str]:
         lo    = ch.lower()
+        if lo != 'w':
+            self._w_undo = None
         is_up = (ch != ch.lower() and ch.isalpha())
 
         if self.temp_viet_off:
@@ -105,17 +111,22 @@ class VietelexEngine:
     def _handle_w(self, is_up: bool) -> tuple[int, str]:
         w_ch = 'W' if is_up else 'w'
 
-        if self.last_w_converted and self.buf:
-            vs_last = get_vowel_set(self.buf[-1])
-            if vs_last in TELEX_BREVE_REV:
-                r = self._undo_breve(is_up)
-                self.last_w_converted = False
-                return r
+        if self._w_undo is not None:
+            previous = self._w_undo
+            self._w_undo = None
+            start = next(i for i, (old, new) in enumerate(zip(previous, self.buf)) if old != new)
+            backs = len(self.buf) - start
+            self.buf[:] = previous
+            self._put_char(w_ch)
+            self.last_w_converted = False
+            self.temp_viet_off = True
+            return backs, ''.join(self.buf[start:])
 
+        previous = self.buf.copy()
         backs, ins = self._put_breve_mark(is_up)
-
         if backs > 0 or ins.lower() != 'w':
-
+            if not self.temp_viet_off:
+                self._w_undo = previous
             self.last_w_converted = True
             return backs, ins
 
@@ -228,20 +239,6 @@ class VietelexEngine:
             self.temp_viet_off = True
             backs = n - i
             return backs, ''.join(self.buf[i:])
-
-    def _undo_breve(self, is_up: bool) -> tuple[int, str]:
-        vs      = get_vowel_set(self.buf[-1])
-        tone    = get_tone(self.buf[-1])
-        up      = self.upper[-1]
-        base_vs = TELEX_BREVE_REV[vs]
-        w_ch    = 'W' if is_up else 'w'
-        self.buf[-1] = make_char(base_vs, tone, up)
-        self._put_char(w_ch)
-        self.temp_viet_off = True
-        return 1, ''.join(self.buf[-2:])
-
-    def _short_key_w(self, is_up: bool) -> tuple[int, str]:
-        raise NotImplementedError("Simple Telex does not support standalone w shorthand")
 
     def _double_char(self, lo: str, is_up: bool, ch: str):
 

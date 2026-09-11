@@ -3,7 +3,6 @@
 import sys
 import os
 import subprocess
-import threading
 
 def ensure_deps():
     missing = []
@@ -27,14 +26,6 @@ ensure_deps()
 import rumps
 import hook
 
-from Cocoa import (
-    NSEvent,
-    NSFlagsChangedMask,
-    NSControlKeyMask,
-    NSShiftKeyMask,
-    NSRunLoop,
-)
-
 def _on_off(value: bool) -> str:
     return "on" if value else "off"
 
@@ -50,12 +41,10 @@ def on_quit(_):
     rumps.quit_application()
 
 class TelexApp(rumps.App):
-    _CTRL_SHIFT = NSControlKeyMask | NSShiftKeyMask
-
     def __init__(self):
         super().__init__("VIE", quit_button=None)
 
-        self._prev_flags = 0
+        self._hook_ready = False
         self._validator_enabled = True
         self._mode_item = rumps.MenuItem("", callback=None)
         self._mode_item.set_callback(None)
@@ -66,6 +55,7 @@ class TelexApp(rumps.App):
             self._mode_item,
             self._toggle_item,
             rumps.MenuItem("Reset Buffer", callback=self._on_reset_buffer),
+            rumps.MenuItem("Keyboard Access...", callback=self._on_keyboard_access),
             None,
             rumps.MenuItem("Preferences...", callback=self._on_preferences),
             rumps.MenuItem("About VietElex", callback=self._on_about),
@@ -73,8 +63,7 @@ class TelexApp(rumps.App):
             rumps.MenuItem("Quit", callback=on_quit),
         ]
 
-        threading.Thread(target=hook.start, daemon=True).start()
-        threading.Thread(target=self._start_shortcut_monitor, daemon=True).start()
+        hook.start(on_toggle=self._toggle, on_status=self._on_hook_status)
 
     def _toggle(self):
         hook.enabled = not hook.enabled
@@ -82,7 +71,11 @@ class TelexApp(rumps.App):
         self._sync_mode_ui()
 
     def _sync_mode_ui(self):
-        if hook.enabled:
+        if not self._hook_ready:
+            self.title = "VIE!"
+            self._mode_item.title = "Keyboard access unavailable"
+            self._toggle_item.title = "Retry Keyboard Access"
+        elif hook.enabled:
             self.title = "VIE"
             self._mode_item.title = "Mode: Simple Telex"
             self._toggle_item.title = "Switch to ABC"
@@ -91,8 +84,25 @@ class TelexApp(rumps.App):
             self._mode_item.title = "Mode: ABC"
             self._toggle_item.title = "Switch to Telex"
 
+    def _on_hook_status(self, ready):
+        self._hook_ready = ready
+        self._sync_mode_ui()
+
+    def _on_keyboard_access(self, _):
+        rumps.alert(
+            title="Keyboard Access",
+            message=("Allow VietElex (or Terminal when running from source) in "
+                     "System Settings → Privacy & Security → Accessibility.\n\n"
+                     "Then choose Retry. If access is still unavailable, restart the app."),
+            ok="Retry",
+        )
+        hook.start(on_toggle=self._toggle, on_status=self._on_hook_status)
+
     def _on_toggle_click(self, _):
-        self._toggle()
+        if not self._hook_ready:
+            self._on_keyboard_access(None)
+        else:
+            self._toggle()
 
     def _on_reset_buffer(self, _):
         hook.engine.clear()
@@ -156,22 +166,6 @@ class TelexApp(rumps.App):
             ),
             ok="Close",
         )
-
-    def _on_flags_changed(self, event):
-        flags = event.modifierFlags() & 0x000FFFFF
-        relevant = flags & self._CTRL_SHIFT
-
-        if relevant == self._CTRL_SHIFT and (self._prev_flags & self._CTRL_SHIFT) != self._CTRL_SHIFT:
-            self._toggle()
-
-        self._prev_flags = flags
-
-    def _start_shortcut_monitor(self):
-        NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
-            NSFlagsChangedMask,
-            self._on_flags_changed,
-        )
-        NSRunLoop.currentRunLoop().run()
 
 if __name__ == "__main__":
     TelexApp().run()

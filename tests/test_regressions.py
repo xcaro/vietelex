@@ -6,15 +6,23 @@ import unittest
 from unittest.mock import patch
 
 from engine import VietelexEngine
+from shortcut import ModifierShortcut
 
 
 def fake_quartz():
     q = types.ModuleType("Quartz")
     names = ["kCGEventLeftMouseDown", "kCGEventRightMouseDown",
              "kCGEventOtherMouseDown", "kCGEventKeyDown",
-             "kCGKeyboardEventKeycode", "kCGEventSourceStatePrivate"]
+             "kCGKeyboardEventKeycode", "kCGEventSourceStatePrivate",
+             "kCGEventFlagsChanged", "kCGEventTapDisabledByTimeout",
+             "kCGEventTapDisabledByUserInput", "kCGSessionEventTap",
+             "kCGHeadInsertEventTap", "kCGEventTapOptionDefault",
+             "kCFRunLoopCommonModes"]
     for i, name in enumerate(names, 1):
         setattr(q, name, i)
+    q.kCGEventFlagMaskShift = 1 << 17
+    q.kCGEventFlagMaskSecondaryFn = 1 << 23
+    q.CGEventMaskBit = lambda value: 1 << value
     q.kCGEventFlagMaskCommand = 1 << 20
     q.kCGEventFlagMaskControl = 1 << 18
     q.kCGEventFlagMaskAlternate = 1 << 19
@@ -32,7 +40,8 @@ class EngineTests(unittest.TestCase):
     def test_simple_telex_and_tone_correction(self):
         cases = {"tieengs": "tiếng", "tieesng": "tiếng", "Vieetj": "Việt",
                  "dduowngf": "đường", "aisf": "ài", "aisz": "ai",
-                 "aiss": "ais", "AISF": "ÀI", "aww": "aw", "w": "w"}
+                 "aiss": "ais", "uoww": "uow", "uwoww": "ưow",
+                 "uongww": "uongw", "UOWW": "UOW", "AISF": "ÀI", "aww": "aw", "w": "w"}
         for keys, expected in cases.items():
             with self.subTest(keys=keys):
                 engine = VietelexEngine()
@@ -97,6 +106,45 @@ class HookTests(unittest.TestCase):
         self.key("a")
         self.key("c", flags=self.q.kCGEventFlagMaskCommand)
         self.assertEqual(self.hook.engine.result_str(), "")
+
+    def test_start_failure_reports_status(self):
+        statuses = []
+        self.q.CGEventTapCreate = lambda *args: None
+        self.assertFalse(self.hook.start(on_status=statuses.append))
+        self.assertEqual(statuses, [False])
+
+    def test_disabled_tap_recovers_and_clears_buffer(self):
+        self.hook._tap = "tap"
+        enabled = []
+        statuses = []
+        self.hook._on_status = statuses.append
+        self.q.CGEventTapEnable = lambda tap, value: enabled.append((tap, value))
+        self.q.CGEventTapIsEnabled = lambda tap: True
+        self.key("a")
+        self.hook.keyboard_callback("proxy", self.q.kCGEventTapDisabledByTimeout, {}, None)
+        self.assertEqual(self.hook.engine.result_str(), "")
+        self.assertEqual(enabled, [("tap", True)])
+        self.assertEqual(statuses, [True])
+
+
+class ShortcutTests(unittest.TestCase):
+    def test_toggle_on_full_release_in_either_order(self):
+        for sequence in [[1, 3, 2, 0], [2, 3, 1, 0]]:
+            shortcut = ModifierShortcut(3, 15)
+            shortcut.cancel()  # Typing before the chord must not block it.
+            self.assertEqual([shortcut.update(f) for f in sequence], [False, False, False, True])
+
+    def test_other_modifiers_or_keys_cancel(self):
+        for sequence in [[4, 5, 7, 3, 1, 0], [1, 3, 7, 3, 0], [1, 0]]:
+            shortcut = ModifierShortcut(3, 15)
+            self.assertFalse(any(shortcut.update(f) for f in sequence))
+        shortcut = ModifierShortcut(3, 15)
+        shortcut.update(1)
+        shortcut.update(3)
+        shortcut.cancel()
+        self.assertFalse(shortcut.update(0))
+        shortcut.update(3)
+        self.assertTrue(shortcut.update(0))
 
 
 if __name__ == "__main__":
