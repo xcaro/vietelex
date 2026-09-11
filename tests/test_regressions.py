@@ -13,7 +13,8 @@ def fake_quartz():
     q = types.ModuleType("Quartz")
     names = ["kCGEventLeftMouseDown", "kCGEventRightMouseDown",
              "kCGEventOtherMouseDown", "kCGEventKeyDown",
-             "kCGKeyboardEventKeycode", "kCGEventSourceStatePrivate",
+             "kCGKeyboardEventKeycode", "kCGEventSourceStateHIDSystemState",
+             "kCGEventSourceUserData", "kCGHIDEventTap", "kCGEventKeyUp",
              "kCGEventFlagsChanged", "kCGEventTapDisabledByTimeout",
              "kCGEventTapDisabledByUserInput", "kCGSessionEventTap",
              "kCGHeadInsertEventTap", "kCGEventTapOptionDefault",
@@ -27,7 +28,9 @@ def fake_quartz():
     q.kCGEventFlagMaskControl = 1 << 18
     q.kCGEventFlagMaskAlternate = 1 << 19
     q.CGEventGetFlags = lambda e: e.get("flags", 0)
-    q.CGEventGetIntegerValueField = lambda e, field: e.get("keycode", 0)
+    q.CGEventGetIntegerValueField = lambda e, field: e.get(field, 0) if field == q.kCGEventSourceUserData else e.get("keycode", 0)
+    q.CGEventSetIntegerValueField = lambda e, field, value: e.update({field: value})
+    q.CGEventCreateCopy = lambda e: e.copy()
     q.CGEventKeyboardGetUnicodeString = lambda e, *args: (len(e["chars"]), e["chars"])
     q.CGEventSourceCreate = lambda state: state
     q.CGEventCreateKeyboardEvent = lambda src, key, down: dict(keycode=key, down=down)
@@ -39,6 +42,7 @@ def fake_quartz():
 class EngineTests(unittest.TestCase):
     def test_simple_telex_and_tone_correction(self):
         cases = {"tieengs": "tiếng", "tieesng": "tiếng", "Vieetj": "Việt",
+                 "hoas": "hoá", "HOAS": "HOÁ", "hoaf": "hoà",
                  "dduowngf": "đường", "aisf": "ài", "aisz": "ai",
                  "aiss": "ais", "uoww": "uow", "uwoww": "ưow",
                  "uongww": "uongw", "UOWW": "UOW", "AISF": "ÀI", "aww": "aw", "w": "w"}
@@ -70,26 +74,72 @@ class HookTests(unittest.TestCase):
         self.screen = ""
         self.posted = []
         self.q.CGEventTapPostEvent = self.post
+        self.hid = []
+        self.q.CGEventPost = self.enqueue
+        self.hook.time = types.SimpleNamespace(sleep=lambda seconds: None)
+
+    def enqueue(self, location, event):
+        self.assertEqual(location, self.q.kCGHIDEventTap)
+        self.assertEqual(event["flags"], 0)
+        self.hid.append(event)
+
+    def deliver(self, event):
+        if event["down"]:
+            if event["keycode"] == 51: self.screen = self.screen[:-1]
+            else: self.screen += event.get("chars", "")
 
     def post(self, proxy, event):
         self.assertEqual(proxy, "proxy")
-        self.assertEqual(event["flags"], 0)
         self.posted.append(event)
-        if event["down"]:
-            if event["keycode"] == 51: self.screen = self.screen[:-1]
-            else: self.screen += event["chars"]
+        self.deliver(event)
 
-    def key(self, chars, keycode=0, flags=0):
-        event = dict(chars=chars, keycode=keycode, flags=flags)
+    def pump(self):
+        while self.hid:
+            event = self.hid.pop(0)
+            event_type = self.q.kCGEventKeyDown if event["down"] else self.q.kCGEventKeyUp
+            result = self.hook.keyboard_callback("proxy", event_type, event, None)
+            if result is not None: self.deliver(result)
+
+    def key(self, chars, keycode=0, flags=0, pump=True):
+        event = dict(chars=chars, keycode=keycode, flags=flags, down=True)
         result = self.hook.keyboard_callback("proxy", self.q.kCGEventKeyDown, event, None)
         if result is not None:
-            self.screen += chars
+            self.deliver(result)
+        if pump: self.pump()
 
     def test_rapid_input_is_ordered(self):
-        for key in "asn": self.key(key)
-        self.assertEqual(self.screen, "án")
-        self.assertEqual(self.hook.engine.result_str(), "án")
-        self.assertEqual(len(self.posted), 4)
+        for key in "hoasnf": self.key(key, pump=False)
+        self.pump()
+        self.assertEqual(self.screen, "hoàn")
+        self.assertEqual(self.hook.engine.result_str(), "hoàn")
+        self.assertFalse(self.hook._replacing)
+        self.assertFalse(self.hook._pending)
+
+    def test_hoas_inserts_unicode_via_hid(self):
+        for key in "hoa": self.key(key)
+        self.key("s", pump=False)
+        self.assertEqual(self.screen, "hoa")
+        self.assertEqual([e.get("chars") for e in self.hid], [None, None, "á", "á"])
+        self.assertEqual([e["down"] for e in self.hid], [True, False, True, False])
+        self.pump()
+        self.assertEqual(self.screen, "hoá")
+        self.assertEqual(self.hook.engine.result_str(), "hoá")
+
+    def test_click_waits_until_replacement_finishes(self):
+        for key in "hoas": self.key(key, pump=False)
+        click = dict(down=False)
+        result = self.hook.keyboard_callback("proxy", self.q.kCGEventLeftMouseDown, click, None)
+        self.assertIsNone(result)
+        self.pump()
+        self.assertEqual(self.screen, "hoá")
+        self.assertEqual(self.hook.engine.result_str(), "")
+
+    def test_backspace_waits_until_replacement_finishes(self):
+        for key in "hoas": self.key(key, pump=False)
+        self.key("", keycode=51, pump=False)
+        self.pump()
+        self.assertEqual(self.screen, "ho")
+        self.assertEqual(self.hook.engine.result_str(), "ho")
 
     def test_untracked_text_invalidates_buffer(self):
         for text in ["é", "😀", "xy", ""]:

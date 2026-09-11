@@ -1,3 +1,7 @@
+import os
+import time
+from collections import deque
+
 import Quartz
 
 from engine import VietelexEngine
@@ -34,27 +38,70 @@ RESET_EVENT_TYPES = {
     Quartz.kCGEventOtherMouseDown,
 }
 
-# Events posted through the callback proxy enter downstream of this tap, in
-# order, before the next physical event. No worker or global bypass is needed.
-def _post_key(proxy, src, keycode, down, text=None):
+# Unicode replacements must enter through HID, as in the original version.
+# Tag our events instead of ignoring all keyboard input during replacement.
+_EVENT_TAG = (os.getpid() << 16) | 0x5649
+_END_TAG = _EVENT_TAG + 1
+_replacing = False
+_pending = deque()
+
+
+def _post_key(src, keycode, down, text=None, final=False):
     event = Quartz.CGEventCreateKeyboardEvent(src, keycode, down)
     Quartz.CGEventSetFlags(event, 0)
+    Quartz.CGEventSetIntegerValueField(
+        event, Quartz.kCGEventSourceUserData, _END_TAG if final else _EVENT_TAG)
     if text is not None:
         Quartz.CGEventKeyboardSetUnicodeString(event, len(text), text)
-    Quartz.CGEventTapPostEvent(proxy, event)
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
 
 
-def send_replacement(proxy, delete_n: int, text: str):
-    src = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStatePrivate)
+def send_replacement(delete_n: int, text: str):
+    global _replacing
+    _replacing = True
+    src = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateHIDSystemState)
     for _ in range(delete_n):
-        _post_key(proxy, src, 51, True)
-        _post_key(proxy, src, 51, False)
-    for ch in text:
-        _post_key(proxy, src, 0, True, ch)
-        _post_key(proxy, src, 0, False, ch)
+        _post_key(src, 51, True)
+        _post_key(src, 51, False)
+        time.sleep(0.004)
+    for i, ch in enumerate(text):
+        _post_key(src, 0, True, ch)
+        _post_key(src, 0, False, ch, final=(i == len(text) - 1))
+        time.sleep(0.003)
+
+
+def _finish_replacement(proxy, event):
+    global _replacing
+    # Deliver the final keyup before any physical events held behind it.
+    Quartz.CGEventTapPostEvent(proxy, event)
+    _replacing = False
+    while _pending and not _replacing:
+        event_type, queued = _pending.popleft()
+        result = _handle_event(proxy, event_type, queued, None)
+        if result is not None:
+            Quartz.CGEventTapPostEvent(proxy, result)
 
 
 def keyboard_callback(proxy, event_type, event, refcon):
+    global _replacing
+    if event_type in (Quartz.kCGEventTapDisabledByTimeout, Quartz.kCGEventTapDisabledByUserInput):
+        _replacing = False
+        _pending.clear()
+        return _handle_event(proxy, event_type, event, refcon)
+
+    tag = Quartz.CGEventGetIntegerValueField(event, Quartz.kCGEventSourceUserData)
+    if tag == _EVENT_TAG:
+        return event
+    if tag == _END_TAG:
+        _finish_replacement(proxy, event)
+        return None
+    if _replacing:
+        _pending.append((event_type, Quartz.CGEventCreateCopy(event)))
+        return None
+    return _handle_event(proxy, event_type, event, refcon)
+
+
+def _handle_event(proxy, event_type, event, refcon):
     if event_type in (Quartz.kCGEventTapDisabledByTimeout, Quartz.kCGEventTapDisabledByUserInput):
         engine.clear()
         shortcut.reset()
@@ -116,7 +163,7 @@ def keyboard_callback(proxy, event_type, event, refcon):
     if delete_n == 0 and insert_str == ch:
         return event
 
-    send_replacement(proxy, delete_n, insert_str)
+    send_replacement(delete_n, insert_str)
     return None
 
 def start(on_toggle=None, on_status=None):
@@ -136,6 +183,7 @@ def start(on_toggle=None, on_status=None):
         Quartz.kCGHeadInsertEventTap,
         Quartz.kCGEventTapOptionDefault,
         (Quartz.CGEventMaskBit(Quartz.kCGEventKeyDown) |
+         Quartz.CGEventMaskBit(Quartz.kCGEventKeyUp) |
          Quartz.CGEventMaskBit(Quartz.kCGEventFlagsChanged) |
          Quartz.CGEventMaskBit(Quartz.kCGEventLeftMouseDown) |
          Quartz.CGEventMaskBit(Quartz.kCGEventRightMouseDown) |

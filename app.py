@@ -74,7 +74,7 @@ class TelexApp(rumps.App):
             rumps.MenuItem("Keyboard Access...", callback=self._on_keyboard_access),
             None,
             preferences,
-            rumps.MenuItem("About VietElex", callback=self._on_about),
+            rumps.MenuItem("About VieTelex", callback=self._on_about),
             None,
             rumps.MenuItem("Quit", callback=on_quit),
         ]
@@ -121,7 +121,7 @@ class TelexApp(rumps.App):
     def _on_keyboard_access(self, _):
         rumps.alert(
             title="Keyboard Access",
-            message=("Allow VietElex (or Terminal when running from source) in "
+            message=("Allow VieTelex (or Terminal when running from source) in "
                      "System Settings → Privacy & Security → Accessibility.\n\n"
                      "Then choose Retry. If access is still unavailable, restart the app."),
             ok="Retry",
@@ -150,18 +150,8 @@ class TelexApp(rumps.App):
         self._defaults.setBool_forKey_(hook.reset_on_mouse_click, "vietelex.reset_on_click")
 
     def _on_about(self, _):
-        rumps.alert(
-            title="VietElex",
-            message=(
-                "Simple Telex input for Vietnamese.\n\n"
-                "Ctrl+Shift: release both keys to toggle Telex/ABC\n"
-                "Reset Buffer: clear current engine state\n"
-                "Mouse click into an input resets the buffer\n\n"
-                "Rules: aw, ow, uw, aa, ee, oo, dd\n"
-                "Tones: s f r x j z"
-            ),
-            ok="Close",
-        )
+        from about import show_about
+        show_about()
 
 if __name__ == "__main__":
     TelexApp().run()
