@@ -43,5 +43,6 @@ app = BUNDLE(
     coll,
     name='vietelex.app',
     icon=None,
-    bundle_identifier=None,
+    bundle_identifier="org.vietelex.app",
+    info_plist={"LSUIElement": True},
 )

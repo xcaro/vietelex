@@ -11,9 +11,15 @@ def ensure_deps():
     except ImportError:
         missing.append("pyobjc-framework-Cocoa")
     try:
+        import Quartz
+    except ImportError:
+        missing.append("pyobjc-framework-Quartz")
+    try:
         import rumps
     except ImportError:
         missing.append("rumps")
+    if missing and getattr(sys, "frozen", False):
+        raise RuntimeError("Missing bundled dependencies: " + ", ".join(missing))
     if missing:
         print(f"Installing missing dependencies: {', '.join(missing)} ...")
         subprocess.check_call(
@@ -26,16 +32,13 @@ ensure_deps()
 import rumps
 import hook
 
-def _on_off(value: bool) -> str:
-    return "on" if value else "off"
+from Cocoa import (
+    NSUserDefaults, NSWorkspace, NSOperationQueue,
+    NSWorkspaceDidActivateApplicationNotification,
+    NSWorkspaceSessionDidResignActiveNotification,
+    NSWorkspaceSessionDidBecomeActiveNotification,
+)
 
-def _parse_on_off(value: str) -> bool | None:
-    normalized = value.strip().lower()
-    if normalized in ("on", "true", "yes", "1"):
-        return True
-    if normalized in ("off", "false", "no", "0"):
-        return False
-    return None
 
 def on_quit(_):
     rumps.quit_application()
@@ -45,7 +48,20 @@ class TelexApp(rumps.App):
         super().__init__("VIE", quit_button=None)
 
         self._hook_ready = False
-        self._validator_enabled = True
+        self._defaults = NSUserDefaults.standardUserDefaults()
+        self._defaults.registerDefaults_({
+            "vietelex.validator": True, "vietelex.reset_on_click": True,
+        })
+        self._validator_enabled = bool(self._defaults.boolForKey_("vietelex.validator"))
+        hook.engine.set_validator_enabled(self._validator_enabled)
+        hook.reset_on_mouse_click = bool(self._defaults.boolForKey_("vietelex.reset_on_click"))
+        self._validator_item = rumps.MenuItem("Phonology Validator", callback=self._on_validator)
+        self._validator_item.state = self._validator_enabled
+        self._reset_click_item = rumps.MenuItem("Reset on Click", callback=self._on_reset_click)
+        self._reset_click_item.state = hook.reset_on_mouse_click
+        preferences = rumps.MenuItem("Preferences")
+        preferences.add(self._validator_item)
+        preferences.add(self._reset_click_item)
         self._mode_item = rumps.MenuItem("", callback=None)
         self._mode_item.set_callback(None)
         self._toggle_item = rumps.MenuItem("", callback=self._on_toggle_click)
@@ -57,13 +73,27 @@ class TelexApp(rumps.App):
             rumps.MenuItem("Reset Buffer", callback=self._on_reset_buffer),
             rumps.MenuItem("Keyboard Access...", callback=self._on_keyboard_access),
             None,
-            rumps.MenuItem("Preferences...", callback=self._on_preferences),
+            preferences,
             rumps.MenuItem("About VietElex", callback=self._on_about),
             None,
             rumps.MenuItem("Quit", callback=on_quit),
         ]
 
+        # Workspace notifications cover app switches that arrive without a
+        # mouse click or keydown (Dock, Mission Control, session changes).
+        center = NSWorkspace.sharedWorkspace().notificationCenter()
+        self._workspace_observers = [
+            center.addObserverForName_object_queue_usingBlock_(
+                name, None, NSOperationQueue.mainQueue(), self._on_context_change)
+            for name in (NSWorkspaceDidActivateApplicationNotification,
+                         NSWorkspaceSessionDidResignActiveNotification,
+                         NSWorkspaceSessionDidBecomeActiveNotification)
+        ]
         hook.start(on_toggle=self._toggle, on_status=self._on_hook_status)
+
+    def _on_context_change(self, _):
+        hook.engine.clear()
+        hook.shortcut.reset()
 
     def _toggle(self):
         hook.enabled = not hook.enabled
@@ -107,58 +137,24 @@ class TelexApp(rumps.App):
     def _on_reset_buffer(self, _):
         hook.engine.clear()
 
-    def _on_preferences(self, _):
-        window = rumps.Window(
-            title="VietElex Preferences",
-            message=(
-                "Edit values, then Save.\n"
-                "Allowed values: on/off"
-            ),
-            default_text=(
-                f"validator={_on_off(self._validator_enabled)}\n"
-                f"reset_on_click={_on_off(hook.reset_on_mouse_click)}"
-            ),
-            ok="Save",
-            cancel="Cancel",
-            dimensions=(360, 96),
-        )
-        response = window.run()
-        if not response.clicked:
-            return
+    def _on_validator(self, item):
+        self._validator_enabled = not self._validator_enabled
+        item.state = self._validator_enabled
+        hook.engine.set_validator_enabled(self._validator_enabled)
+        self._defaults.setBool_forKey_(self._validator_enabled, "vietelex.validator")
 
-        updates: dict[str, bool] = {}
-        for line in response.text.splitlines():
-            if not line.strip() or line.strip().startswith("#"):
-                continue
-            if "=" not in line:
-                self._show_preferences_error(line)
-                return
-            key, value = line.split("=", 1)
-            parsed = _parse_on_off(value)
-            if key.strip() not in ("validator", "reset_on_click") or parsed is None:
-                self._show_preferences_error(line)
-                return
-            updates[key.strip()] = parsed
-
-        if "validator" in updates:
-            self._validator_enabled = updates["validator"]
-            hook.engine.set_validator_enabled(self._validator_enabled)
-        if "reset_on_click" in updates:
-            hook.reset_on_mouse_click = updates["reset_on_click"]
-
-    def _show_preferences_error(self, line: str):
-        rumps.alert(
-            title="Invalid Preferences",
-            message=f"Could not parse: {line}\nUse validator=on/off and reset_on_click=on/off.",
-            ok="Close",
-        )
+    def _on_reset_click(self, item):
+        hook.reset_on_mouse_click = not hook.reset_on_mouse_click
+        item.state = hook.reset_on_mouse_click
+        hook.engine.clear()
+        self._defaults.setBool_forKey_(hook.reset_on_mouse_click, "vietelex.reset_on_click")
 
     def _on_about(self, _):
         rumps.alert(
             title="VietElex",
             message=(
                 "Simple Telex input for Vietnamese.\n\n"
-                "Ctrl+Shift: toggle Telex/ABC\n"
+                "Ctrl+Shift: release both keys to toggle Telex/ABC\n"
                 "Reset Buffer: clear current engine state\n"
                 "Mouse click into an input resets the buffer\n\n"
                 "Rules: aw, ow, uw, aa, ee, oo, dd\n"

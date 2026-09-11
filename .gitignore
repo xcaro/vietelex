@@ -18,6 +18,3 @@ dist/
 *.zip
 *.bak
 data.json
-
-# Test and diagnostic artifacts are kept locally only.
-tests/
