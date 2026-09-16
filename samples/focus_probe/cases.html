@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="vi">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VieTelex — Focus probe cases</title>
+<style>
+  body { font: 16px/1.5 system-ui; max-width: 850px; margin: 32px auto; padding: 0 20px; }
+  label, section { display: block; margin: 20px 0; }
+  input, textarea, button, select { font: inherit; padding: 8px; }
+  textarea { width: 90%; }
+  [contenteditable], canvas { border: 2px solid #888; padding: 12px; }
+  :focus { outline: 3px solid #1266d4; outline-offset: 3px; }
+  canvas { display: block; width: min(100%, 500px); height: 110px; }
+  [hidden] { display: none !important; }
+  #movement { min-height: 1.5em; }
+</style>
+<h1>Kiểm tra nhận diện focus</h1>
+<p>Chạy <code>probe.py</code> trong Terminal, rồi click hoặc Tab qua các trường này.
+So sánh log AX với loại ô đang dùng. Probe không sửa hành vi bộ gõ đang chạy.</p>
+<label>Text <input aria-label="Text" placeholder="Gõ thử tiếng Việt"></label>
+<label>Search <input type="search" aria-label="Search"></label>
+<label>Password <input type="password" aria-label="Password" autocomplete="off"></label>
+<label>Textarea <textarea aria-label="Textarea" rows="2"></textarea></label>
+<section>
+  <p>Contenteditable (rich text):</p>
+  <div contenteditable="true" role="textbox" aria-label="Rich text" aria-multiline="true">Gõ thử ở đây</div>
+</section>
+<section>
+  <p>Contenteditable không khai báo role:</p>
+  <div contenteditable="true" aria-label="Editable without explicit role">Gõ thử ở đây</div>
+</section>
+<label>Readonly <input aria-label="Readonly" readonly value="Có thể chọn chữ, không thể nhập"></label>
+<label>Disabled <input aria-label="Disabled" disabled value="Không nhận keyboard focus"></label>
+<label>Combobox <input aria-label="Combobox" list="suggestions"><datalist id="suggestions"><option value="Alpha"><option value="Beta"></datalist></label>
+<label>Select <select aria-label="Select"><option>Alpha</option><option>Beta</option></select></label>
+<p><button type="button">Button</button> <a href="#play">Link đến vùng điều khiển</a></p>
+<p tabindex="0">Văn bản tĩnh có thể focus và chọn chữ.</p>
+<section id="play">
+  <h2>Vùng điều khiển + chat</h2>
+  <p>Click canvas, giữ WASD. Enter mở ô chat; Enter gửi hoặc Esc đóng và trả focus
+  về canvas. Không dùng suy đoán Enter trong probe: log phải đổi theo focus thật.</p>
+  <canvas tabindex="0" width="500" height="110" aria-label="Vùng điều khiển WASD"></canvas>
+  <label id="chat-box" hidden>Chat <input id="chat" aria-label="Chat" autocomplete="off"></label>
+  <p id="movement" aria-live="polite">Chưa giữ phím di chuyển.</p>
+  <button id="open-chat" type="button">Mở chat bằng chuột</button>
+  <button id="close-chat" type="button">Đóng chat bằng chuột</button>
+  <p>Mở/đóng bằng chuột cũng phải được nhận ra mà không cần Enter. Đây là fixture
+  có input HTML thật; game vẽ chat trực tiếp trên canvas có thể chỉ cho kết quả UNKNOWN.</p>
+</section>
+<script>
+  const canvas = document.querySelector('canvas');
+  const chat = document.querySelector('#chat');
+  const box = document.querySelector('#chat-box');
+  const movement = document.querySelector('#movement');
+  const held = new Set();
+  const keys = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD']);
+  const context = canvas.getContext('2d');
+  context.font = '18px system-ui';
+  context.fillText('Click → WASD; Enter → chat', 20, 60);
+  function showMovement() {
+    movement.textContent = held.size ? 'Đang giữ: ' + [...held].join(', ') : 'Chưa giữ phím di chuyển.';
+  }
+  function openChat() { box.hidden = false; chat.focus(); }
+  function closeChat() { box.hidden = true; chat.value = ''; canvas.focus(); }
+  canvas.addEventListener('keydown', event => {
+    if (event.key === 'Enter' && !event.repeat) { event.preventDefault(); openChat(); }
+    else if (keys.has(event.code)) { event.preventDefault(); held.add(event.code); showMovement(); }
+  });
+  canvas.addEventListener('keyup', event => { held.delete(event.code); showMovement(); });
+  canvas.addEventListener('blur', () => { held.clear(); showMovement(); });
+  chat.addEventListener('keydown', event => {
+    if (!event.isComposing && !event.repeat && ['Enter', 'Escape'].includes(event.key)) {
+      event.preventDefault(); closeChat();
+    }
+  });
+  document.querySelector('#open-chat').addEventListener('click', openChat);
+  document.querySelector('#close-chat').addEventListener('click', closeChat);
+</script>
+</html>

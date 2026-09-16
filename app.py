@@ -3,6 +3,10 @@
 import sys
 import os
 import subprocess
+import logging
+
+if os.environ.get("VIETELEX_DEBUG_FOCUS") == "1":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
 def ensure_deps():
     missing = []
@@ -31,6 +35,8 @@ ensure_deps()
 
 import rumps
 import hook
+from focus import FocusService
+from keyboard_access import KeyboardAccessPanel
 
 from Cocoa import (
     NSUserDefaults, NSWorkspace, NSOperationQueue,
@@ -40,14 +46,12 @@ from Cocoa import (
 )
 
 
-def on_quit(_):
-    rumps.quit_application()
-
 class TelexApp(rumps.App):
     def __init__(self):
         super().__init__("VIE", quit_button=None)
 
         self._hook_ready = False
+        self._keyboard_access_panel = None
         self._defaults = NSUserDefaults.standardUserDefaults()
         self._defaults.registerDefaults_({
             "vietelex.validator": True, "vietelex.reset_on_click": True,
@@ -76,12 +80,15 @@ class TelexApp(rumps.App):
             preferences,
             rumps.MenuItem("About VieTelex", callback=self._on_about),
             None,
-            rumps.MenuItem("Quit", callback=on_quit),
+            rumps.MenuItem("Quit", callback=self._on_quit),
         ]
 
         # Workspace notifications cover app switches that arrive without a
         # mouse click or keydown (Dock, Mission Control, session changes).
-        center = NSWorkspace.sharedWorkspace().notificationCenter()
+        self._workspace = NSWorkspace.sharedWorkspace()
+        center = self._workspace.notificationCenter()
+        self._focus_pid = None
+        self._session_active = True
         self._workspace_observers = [
             center.addObserverForName_object_queue_usingBlock_(
                 name, None, NSOperationQueue.mainQueue(), self._on_context_change)
@@ -90,10 +97,45 @@ class TelexApp(rumps.App):
                          NSWorkspaceSessionDidBecomeActiveNotification)
         ]
         hook.start(on_toggle=self._toggle, on_status=self._on_hook_status)
+        self._focus_service = FocusService()
+        self._focus_service.start()
+        self._focus_timer = rumps.Timer(self._poll_focus, 0.05)
+        self._focus_timer.start()
 
-    def _on_context_change(self, _):
-        hook.engine.clear()
-        hook.shortcut.reset()
+    def _on_context_change(self, notification):
+        self._session_active = (notification is None or notification.name()
+                                != NSWorkspaceSessionDidResignActiveNotification)
+        self._focus_pid = None
+        epoch = hook.invalidate_context()
+        if hasattr(self, "_focus_service"):
+            self._focus_service.request(None, epoch)
+
+    def _poll_focus(self, _):
+        # NSWorkspace lives on the serviced Cocoa main loop. AX queries run
+        # exclusively on FocusService's worker, away from the event tap.
+        app = self._workspace.frontmostApplication() if self._session_active else None
+        pid = int(app.processIdentifier()) if app is not None else None
+        if pid != self._focus_pid:
+            self._focus_pid = pid
+            hook.invalidate_context()
+        epoch = hook.focus_epoch()
+        self._focus_service.request(pid, epoch)
+        if hook.consume_focus_refresh():
+            self._focus_service.refresh()
+        snapshot = self._focus_service.latest()
+        if snapshot is not None and snapshot.pid == pid and snapshot.epoch == epoch:
+            hook.publish_focus(snapshot)
+
+    def _on_quit(self, _):
+        if self._keyboard_access_panel is not None:
+            self._keyboard_access_panel.close_(None)
+        self._focus_timer.stop()
+        self._focus_service.stop()
+        center = self._workspace.notificationCenter()
+        for observer in self._workspace_observers:
+            if observer is not None:
+                center.removeObserver_(observer)
+        rumps.quit_application()
 
     def _toggle(self):
         hook.enabled = not hook.enabled
@@ -119,14 +161,14 @@ class TelexApp(rumps.App):
         self._sync_mode_ui()
 
     def _on_keyboard_access(self, _):
-        rumps.alert(
-            title="Keyboard Access",
-            message=("Allow VieTelex (or Terminal when running from source) in "
-                     "System Settings → Privacy & Security → Accessibility.\n\n"
-                     "Then choose Retry. If access is still unavailable, restart the app."),
-            ok="Retry",
-        )
+        if self._keyboard_access_panel is None:
+            self._keyboard_access_panel = KeyboardAccessPanel.alloc().init()
+            self._keyboard_access_panel.configure(self._retry_keyboard_access)
+        self._keyboard_access_panel.show()
+
+    def _retry_keyboard_access(self):
         hook.start(on_toggle=self._toggle, on_status=self._on_hook_status)
+        self._focus_service.start()
 
     def _on_toggle_click(self, _):
         if not self._hook_ready:

@@ -18,7 +18,7 @@ def fake_quartz():
              "kCGEventFlagsChanged", "kCGEventTapDisabledByTimeout",
              "kCGEventTapDisabledByUserInput", "kCGSessionEventTap",
              "kCGHeadInsertEventTap", "kCGEventTapOptionDefault",
-             "kCFRunLoopCommonModes"]
+             "kCFRunLoopCommonModes", "kCGKeyboardEventAutorepeat"]
     for i, name in enumerate(names, 1):
         setattr(q, name, i)
     q.kCGEventFlagMaskShift = 1 << 17
@@ -28,7 +28,7 @@ def fake_quartz():
     q.kCGEventFlagMaskControl = 1 << 18
     q.kCGEventFlagMaskAlternate = 1 << 19
     q.CGEventGetFlags = lambda e: e.get("flags", 0)
-    q.CGEventGetIntegerValueField = lambda e, field: e.get(field, 0) if field == q.kCGEventSourceUserData else e.get("keycode", 0)
+    q.CGEventGetIntegerValueField = lambda e, field: e.get("keycode", 0) if field == q.kCGKeyboardEventKeycode else e.get(field, 0)
     q.CGEventSetIntegerValueField = lambda e, field, value: e.update({field: value})
     q.CGEventCreateCopy = lambda e: e.copy()
     q.CGEventKeyboardGetUnicodeString = lambda e, *args: (len(e["chars"]), e["chars"])
